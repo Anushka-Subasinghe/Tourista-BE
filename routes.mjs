@@ -3,6 +3,7 @@
 import express from 'express';
 import passport from 'passport';
 import moment from 'moment';
+import locations from './locations.js';
 
 const router = express.Router();
 
@@ -66,69 +67,94 @@ router.post('/calculate-route', async (req, res, next) => {
     const checkIn = moment(checkInDate);
     const checkOut = moment(checkOutDate);
     const durationInDays = checkOut.diff(checkIn, 'days');
-    console.log(durationInDays);
-    // Fetch destinations based on the check-in date and number of days
-    const destinations = await fetchDestinations(durationInDays, apiKey, lat, lng);
 
-    // Calculate route itinerary using Google Directions API
-    const routeItinerary = await calculateRoute(destinations, apiKey);
-    console.log(routeItinerary);
-    // Return route itinerary
-    res.json(routeItinerary);
+    // Select three different sets of destinations from the hard-coded locations
+    const numDestinations = durationInDays + 1; // Number of destinations per itinerary
+    const numItineraries = 3; // Number of itineraries
+
+    const allDestinations = locations.slice(); // Copying the locations array
+    const itineraries = [];
+
+    for (let i = 0; i < numItineraries; i++) {
+      // Shuffle the locations array to get a different set of destinations for each itinerary
+      let shuffledLocations = shuffle(allDestinations);
+      const destinations = [];
+
+      // Selecting the first numDestinations unique locations for this itinerary
+      while (destinations.length < numDestinations) {
+        const nextLocation = shuffledLocations.pop(); // Get the last element (to maintain randomness)
+        // Check if the nextLocation is already included in any previous itinerary
+        const isDuplicate = itineraries.some(itinerary =>
+          itinerary.waypoints.some(waypoint =>
+            waypoint.placeName === nextLocation.placeName
+          )
+        );
+        if (!isDuplicate) {
+          destinations.push(nextLocation);
+        }
+      }
+
+      // Calculate route itinerary using Google Directions API
+      const routeItinerary = await calculateRoute(destinations, lat, lng, apiKey);
+      itineraries.push(routeItinerary);
+    }
+
+    // Return the three itineraries
+    res.json(itineraries);
   } catch (error) {
-    console.error('Error calculating route itinerary:', error);
+    console.error('Error calculating route itineraries:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
-async function fetchDestinations(durationInDays, apiKey, lat, lng) {
-  // Set radius for nearby search (adjust as needed)
-  const radius = 5000; // 5 km radius
 
-  try {
-    // Make a single request to the nearby search endpoint
-    const response = await fetch(`https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&key=${apiKey}`);
-    const data = await response.json();
-    const allDestinations = data.results.map(result => ({
-      name: result.name,
-      lat: result.geometry.location.lat,
-      lng: result.geometry.location.lng
-    }));
-
-    // Slice the array to contain the number of destinations similar to the number of days
-    const slicedDestinations = allDestinations.slice(0, durationInDays);
-
-    return slicedDestinations;
-  } catch (error) {
-    console.error('Error fetching destinations:', error);
-    throw error;
+// Function to shuffle an array (Fisher-Yates algorithm)
+function shuffle(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
   }
+  return array;
 }
 
-
-async function calculateRoute(destinations, apiKey) {
+// Function to calculate route using Google Directions API
+async function calculateRoute(destinations, userLat, userLng, apiKey) {
   // Construct waypoints for the route using the destinations
-  const waypoints = destinations.map(destination => `${destination.lat},${destination.lng}`);
+  const waypoints = destinations.map(destination => `${destination.coordinates.lat},${destination.coordinates.lng}`);
+  // console.log({
+  //   origin: `${userLat},${userLng}`, // Start from the user's location
+  //   destination: `${waypoints[waypoints.length - 1]}`,
+  //   waypoints: waypoints.slice(0, -1).join('|'), // Intermediate destinations as waypoints
+  //   optimizeWaypoints: true, // Optimize the order of waypoints
+  //   mode: 'driving', // Travel mode
+  //   key: apiKey, // Google Maps API key
+  // });
+  
 
   // Construct request parameters for Google Directions API
   const params = new URLSearchParams({
-    key: apiKey,
-    origin: waypoints[0], // Start from the first destination
-    destination: waypoints[waypoints.length - 1], // End at the last destination
-    waypoints: waypoints.slice(1, -1).join('|'), // Intermediate destinations as waypoints
+    origin: `${userLat},${userLng}`, // Start from the user's location
+    destination: `${waypoints[waypoints.length - 1]}`,
+    waypoints: waypoints.slice(0, -1).join('|'), // Intermediate destinations as waypoints
     optimizeWaypoints: true, // Optimize the order of waypoints
     mode: 'driving', // Travel mode
+    key: apiKey, // Google Maps API key
   });
 
   // Make a request to Google Directions API
   const response = await fetch(`https://maps.googleapis.com/maps/api/directions/json?${params}`);
   const data = await response.json();
 
+  console.log(data.routes[0]);
+
   // Extract route itinerary from the response
   const routeItinerary = {
-    route: data.routes[0], // Get the first route (assuming there's only one)
-    waypoints: destinations, // Include the list of destinations
-  };
+  route: data.routes[0], // Get the first route (assuming there's only one)
+  waypoints: destinations.map(destination => ({
+    placeName: destination.placeName, // Include the placeName
+    coordinates: destination.coordinates // Include the coordinates
+  })), // Include the list of destinations
+};
 
   return routeItinerary;
 }
